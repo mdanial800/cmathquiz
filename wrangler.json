@@ -1,3 +1,13 @@
+"observability": {
+  "enabled": true,
+  "logs": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "invocation_logs": true,
+    "persist": true
+  }
+}
+
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cmathquiz",
