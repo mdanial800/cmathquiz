@@ -1,15 +1,17 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
 import { z } from 'zod'
 
 import { DIFFICULTY_LEVELS, getTopic, type Difficulty, type TopicId } from './topics'
 import { pickBankRound, type Question } from './question-bank'
 import type { TutorMode } from './quiz.functions'
 
-const anthropic = new Anthropic()
+// Initialize Gemini (It will look for GEMINI_API_KEY in the environment)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY || '')
 
-const QUESTION_MODEL = 'claude-sonnet-5-5'
-const TUTOR_MODEL = 'claude-haiku-5-5'
+const QUESTION_MODEL = 'gemini-2.5-flash'
+const TUTOR_MODEL = 'gemini-2.5-flash'
 
+// Keep the Zod schema for final validation
 const generatedSchema = z.object({
   questions: z
     .array(
@@ -29,53 +31,43 @@ const generatedSchema = z.object({
     .min(1),
 })
 
-const QUESTION_TOOL: Anthropic.Tool = {
-  name: 'submit_questions',
-  description: 'Submit the finished multiple-choice questions for the round.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      questions: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            subskill: { type: 'string', description: 'One of the subskill ids provided.' },
-            level: { type: 'integer', enum: [1, 2, 3] },
-            prompt: { type: 'string', description: 'The question. Maths in $...$ LaTeX.' },
-            solution_steps: {
-              type: 'array',
-              items: { type: 'string' },
-              description:
-                'Worked solution, 2-4 short steps, written BEFORE choosing options. Each step one line with LaTeX.',
-            },
-            options: {
-              type: 'array',
-              minItems: 4,
-              maxItems: 4,
-              items: {
-                type: 'object',
-                properties: {
-                  text: { type: 'string', description: 'The answer choice, usually pure LaTeX in $...$.' },
-                  why: {
-                    type: 'string',
-                    description:
-                      'If wrong: the specific misconception or slip that produces this answer, addressed to the student. If correct: one-line justification.',
-                  },
-                },
-                required: ['text', 'why'],
-              },
-            },
-            correct_index: { type: 'integer', minimum: 0, maximum: 3 },
-            hint: { type: 'string', description: 'A nudge towards the method that does NOT reveal the answer.' },
-            key_idea: { type: 'string', description: 'The one rule or idea to remember, with LaTeX.' },
+// Define the schema for Gemini's structured output
+const geminiQuestionSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    questions: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          subskill: { type: SchemaType.STRING, description: 'One of the subskill ids provided.' },
+          level: { type: SchemaType.INTEGER },
+          prompt: { type: SchemaType.STRING, description: 'The question. Maths in $...$ LaTeX.' },
+          solution_steps: {
+            type: SchemaType.ARRAY,
+            items: { type: SchemaType.STRING },
+            description: 'Worked solution, 2-4 short steps, written BEFORE choosing options. Each step one line with LaTeX.',
           },
-          required: ['subskill', 'level', 'prompt', 'solution_steps', 'options', 'correct_index', 'hint', 'key_idea'],
+          options: {
+            type: SchemaType.ARRAY,
+            items: {
+              type: SchemaType.OBJECT,
+              properties: {
+                text: { type: SchemaType.STRING, description: 'The answer choice, usually pure LaTeX in $...$.' },
+                why: { type: SchemaType.STRING, description: 'If wrong: the specific misconception. If correct: one-line justification.' },
+              },
+              required: ['text', 'why'],
+            },
+          },
+          correct_index: { type: SchemaType.INTEGER },
+          hint: { type: SchemaType.STRING, description: 'A nudge towards the method that does NOT reveal the answer.' },
+          key_idea: { type: SchemaType.STRING, description: 'The one rule or idea to remember, with LaTeX.' },
         },
+        required: ['subskill', 'level', 'prompt', 'solution_steps', 'options', 'correct_index', 'hint', 'key_idea'],
       },
     },
-    required: ['questions'],
   },
+  required: ['questions'],
 }
 
 const CONTEXTS = [
@@ -102,16 +94,17 @@ export async function generateRound(input: {
   const context = CONTEXTS[Math.floor(Math.random() * CONTEXTS.length)]
 
   try {
-    const message = await anthropic.messages.create(
-      {
-        model: QUESTION_MODEL,
-        max_tokens: 6000,
-        system:
-          'You are an expert university Computing mathematics lecturer who writes rigorous, diagnostic multiple-choice questions. Accuracy is paramount: solve every question fully in solution_steps before writing the options, then double-check that exactly one option matches your solution. Every distractor must come from a genuine, common student misconception or slip, and its "why" must name that misconception kindly and precisely. Use KaTeX-compatible LaTeX wrapped in $...$ for all maths (use \\begin{bmatrix} for matrices). Keep numbers clean so the question can be solved by hand in under two minutes.',
-        messages: [
-          {
-            role: 'user',
-            content: `Write ${levels.length} questions on ${topic.name}.
+    const model = genAI.getGenerativeModel({
+      model: QUESTION_MODEL,
+      systemInstruction: 'You are an expert university Computing mathematics lecturer who writes rigorous, diagnostic multiple-choice questions. Accuracy is paramount: solve every question fully in solution_steps before writing the options, then double-check that exactly one option matches your solution. Every distractor must come from a genuine, common student misconception or slip, and its "why" must name that misconception kindly and precisely. Use KaTeX-compatible LaTeX wrapped in $...$ for all maths (use \\begin{bmatrix} for matrices). Keep numbers clean so the question can be solved by hand in under two minutes.',
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: geminiQuestionSchema,
+        maxOutputTokens: 6000,
+      },
+    })
+
+    const prompt = `Write ${levels.length} questions on ${topic.name}.
 
 Subskills (use these ids):
 ${subskills}
@@ -119,21 +112,17 @@ ${subskills}
 Levels in order: ${levels.join(', ')} (1 = Foundation: one-step recall, 2 = Apply: multi-step, 3 = Challenge: combines ideas or needs insight).
 ${input.focus.length ? 'At least half of the questions must target the FOCUS subskills.' : 'Cover as many different subskills as possible.'}
 Frame one or two questions in a ${context} context to show why this matters in Computing; keep the rest purely mathematical.
-Vary the position of the correct answer. Do not reuse textbook-standard examples verbatim.`,
-          },
-        ],
-        tools: [QUESTION_TOOL],
-        tool_choice: { type: 'tool', name: 'submit_questions' },
-      },
-      { timeout: 45_000, maxRetries: 0 },
-    )
+Vary the position of the correct answer. Do not reuse textbook-standard examples verbatim.`
 
-    const block = message.content.find((b) => b.type === 'tool_use')
-    const parsed = generatedSchema.safeParse(block?.type === 'tool_use' ? block.input : null)
+    const result = await model.generateContent(prompt)
+    const parsedJson = JSON.parse(result.response.text())
+    const parsed = generatedSchema.safeParse(parsedJson)
+    
     if (!parsed.success) throw new Error('Invalid question payload')
 
     const validSubskills = new Set(topic.subskills.map((s) => s.id))
     const stamp = Date.now().toString(36)
+    
     return parsed.data.questions
       .map((q, i) => ({
         id: `ai-${stamp}-${i}`,
@@ -155,16 +144,11 @@ Vary the position of the correct answer. Do not reuse textbook-standard examples
   }
 }
 
-
 const MODE_INSTRUCTIONS: Record<TutorMode, string> = {
-  simpler:
-    'Re-explain the solution more simply, in plain language, as if to a peer who is meeting the idea for the first time. Avoid jargon.',
-  intuition:
-    'Give a geometric or visual intuition for why the method works — describe what the student should picture. Connect it to Computing where natural.',
-  example:
-    'Give ONE new, similar practice problem with different numbers. State the problem only and ask the student to try it; put the answer at the end after the word "Answer:" so they can self-check.',
-  'check-reasoning':
-    'The student has explained their reasoning in their own words. Assess it honestly: affirm what is correct, gently pinpoint any gap or misconception, and suggest one improvement. Do not just restate the full solution.',
+  simpler: 'Re-explain the solution more simply, in plain language, as if to a peer who is meeting the idea for the first time. Avoid jargon.',
+  intuition: 'Give a geometric or visual intuition for why the method works — describe what the student should picture. Connect it to Computing where natural.',
+  example: 'Give ONE new, similar practice problem with different numbers. State the problem only and ask the student to try it; put the answer at the end after the word "Answer:" so they can self-check.',
+  'check-reasoning': 'The student has explained their reasoning in their own words. Assess it honestly: affirm what is correct, gently pinpoint any gap or misconception, and suggest one improvement. Do not just restate the full solution.',
   ask: 'Answer the student\'s follow-up question directly. Prefer guiding questions and short steps over lectures.',
 }
 
@@ -185,33 +169,25 @@ export async function tutorReply(input: {
         : `The student chose ${input.options[input.chosenIndex]}, which is wrong.`
 
   try {
-    const message = await anthropic.messages.create(
-      {
-        model: TUTOR_MODEL,
-        max_tokens: 700,
-        system:
-          'You are a warm, encouraging peer tutor for university Computing mathematics. You care about understanding, not just answers. Be concise (under 150 words), use short paragraphs or numbered steps, and write all maths in KaTeX-compatible LaTeX inside $...$. Never use markdown headings or tables. Bold sparingly with **text**.',
-        messages: [
-          {
-            role: 'user',
-            content: `Question: ${input.question}
+    const model = genAI.getGenerativeModel({
+      model: TUTOR_MODEL,
+      systemInstruction: 'You are a warm, encouraging peer tutor for university Computing mathematics. You care about understanding, not just answers. Be concise (under 150 words), use short paragraphs or numbered steps, and write all maths in KaTeX-compatible LaTeX inside $...$. Never use markdown headings or tables. Bold sparingly with **text**.',
+      generationConfig: {
+        maxOutputTokens: 700,
+      },
+    })
+
+    const prompt = `Question: ${input.question}
 Options: ${input.options.map((o, i) => `(${String.fromCharCode(65 + i)}) ${o}`).join('  ')}
 Correct answer: ${input.options[input.correctIndex]}
 Reference solution: ${input.steps.join(' → ')}
 ${chosen}
 
 Task: ${MODE_INSTRUCTIONS[input.mode]}
-${input.message ? `Student says: """${input.message}"""` : ''}`,
-          },
-        ],
-      },
-      { timeout: 30_000, maxRetries: 1 },
-    )
-    const text = message.content
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n')
-      .trim()
+${input.message ? `Student says: """${input.message}"""` : ''}`
+
+    const result = await model.generateContent(prompt)
+    const text = result.response.text().trim()
     return text || 'I could not come up with an explanation just now — try asking in a different way.'
   } catch (error) {
     console.error('Tutor request failed', error)
