@@ -189,8 +189,22 @@ ${input.message ? `Student says: """${input.message}"""` : ''}`
     const result = await model.generateContent(prompt)
     const text = result.response.text().trim()
     return text || 'I could not come up with an explanation just now — try asking in a different way.'
-  } catch (error) {
-    console.error('Tutor request failed', error)
+  
+  } catch (error: unknown) {
+    const err = error as {
+      message?: string
+      status?: number
+      statusText?: string
+      errorDetails?: unknown
+    }
+
+    console.error('Tutor request failed', {
+      message: err.message ?? String(error),
+      status: err.status,
+      statusText: err.statusText,
+      errorDetails: err.errorDetails,
+    })
+
     throw new Error('The tutor is unavailable right now. Please try again in a moment.')
   }
 }
