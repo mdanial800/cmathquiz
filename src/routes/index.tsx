@@ -77,14 +77,12 @@ function Home() {
               </div>
             </div>
             <img
-              src="/.netlify/images?url=/img/hero.png&w=900&fm=webp"
-              srcSet="/.netlify/images?url=/img/hero.png&w=600&fm=webp 600w, /.netlify/images?url=/img/hero.png&w=900&fm=webp 900w, /.netlify/images?url=/img/hero.png&w=1200&fm=webp 1200w"
-              sizes="(min-width: 768px) 50vw, 100vw"
+              src="/img/hero.png"
               width={1200}
               height={896}
               alt="Illustration of vector arrows, a matrix of tiles, a curve approaching its limit and a tangent line"
               className="w-full rounded-3xl border bg-card shadow-sm"
-            />
+          />
           </div>
         </section>
 
