@@ -15,8 +15,8 @@ function getGenAI() {
   return new GoogleGenerativeAI(apiKey)
 }
 
-const QUESTION_MODEL = 'gemini-3.8-flash'
-const TUTOR_MODEL = 'gemini-3.8-flash'
+const QUESTION_MODEL = 'gemini-3.8-pro'
+const TUTOR_MODEL = 'gemini-3.8-pro'
 
 // Keep the Zod schema for final validation
 const generatedSchema = z.object({
