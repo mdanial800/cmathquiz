@@ -1,12 +1,10 @@
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
-import { env } from 'cloudflare:workers'
+import { GoogleGenerativeAI, SchemaType, type GenerateContentRequest } from '@google/generative-ai'
 import { z } from 'zod'
 
 import { DIFFICULTY_LEVELS, getTopic, type Difficulty, type TopicId } from './topics'
 import { pickBankRound, type Question } from './question-bank'
 import type { TutorMode } from './quiz.functions'
 
-// Initialize Gemini (It will look for GEMINI_API_KEY in the environment)
 function getGenAI() {
   const apiKey = process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY
   if (!apiKey) {
@@ -15,10 +13,34 @@ function getGenAI() {
   return new GoogleGenerativeAI(apiKey)
 }
 
-const QUESTION_MODEL = 'gemini-3.8-pro'
-const TUTOR_MODEL = 'gemini-3.8-pro'
+// Tries gemini-3.8-pro first; falls back to gemini-3.8-flash if overloaded (503) or rate-limited (429)
+const MODEL_PRIORITY = ['gemini-3.8-pro', 'gemini-3.8-flash']
 
-// Keep the Zod schema for final validation
+async function generateWithFallback(
+  prompt: string,
+  systemInstruction: string,
+  generationConfig: Record<string, unknown>,
+) {
+  const genAI = getGenAI()
+  let lastError: unknown
+
+  for (const modelName of MODEL_PRIORITY) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction,
+        generationConfig,
+      })
+      const result = await model.generateContent(prompt)
+      return result.response.text()
+    } catch (error) {
+      console.warn(`Model ${modelName} failed, trying next fallback...`, error)
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
 const generatedSchema = z.object({
   questions: z
     .array(
@@ -38,7 +60,6 @@ const generatedSchema = z.object({
     .min(1),
 })
 
-// Define the schema for Gemini's structured output
 const geminiQuestionSchema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -101,16 +122,6 @@ export async function generateRound(input: {
   const context = CONTEXTS[Math.floor(Math.random() * CONTEXTS.length)]
 
   try {
-    const model = getGenAI().getGenerativeModel({
-      model: QUESTION_MODEL,
-      systemInstruction: 'You are an expert university Computing mathematics lecturer who writes rigorous, diagnostic multiple-choice questions. Accuracy is paramount: solve every question fully in solution_steps before writing the options, then double-check that exactly one option matches your solution. Every distractor must come from a genuine, common student misconception or slip, and its "why" must name that misconception kindly and precisely. Use KaTeX-compatible LaTeX wrapped in $...$ for all maths (use \\begin{bmatrix} for matrices). Keep numbers clean so the question can be solved by hand in under two minutes.',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: geminiQuestionSchema,
-        maxOutputTokens: 6000,
-      },
-    })
-
     const prompt = `Write ${levels.length} questions on ${topic.name}.
 
 Subskills (use these ids):
@@ -121,15 +132,24 @@ ${input.focus.length ? 'At least half of the questions must target the FOCUS sub
 Frame one or two questions in a ${context} context to show why this matters in Computing; keep the rest purely mathematical.
 Vary the position of the correct answer. Do not reuse textbook-standard examples verbatim.`
 
-    const result = await model.generateContent(prompt)
-    const parsedJson = JSON.parse(result.response.text())
+    const responseText = await generateWithFallback(
+      prompt,
+      'You are an expert university Computing mathematics lecturer who writes rigorous, diagnostic multiple-choice questions. Accuracy is paramount: solve every question fully in solution_steps before writing the options, then double-check that exactly one option matches your solution. Every distractor must come from a genuine, common student misconception or slip, and its "why" must name that misconception kindly and precisely. Use KaTeX-compatible LaTeX wrapped in $...$ for all maths (use \\begin{bmatrix} for matrices). Keep numbers clean so the question can be solved by hand in under two minutes.',
+      {
+        responseMimeType: 'application/json',
+        responseSchema: geminiQuestionSchema,
+        maxOutputTokens: 6000,
+      },
+    )
+
+    const parsedJson = JSON.parse(responseText)
     const parsed = generatedSchema.safeParse(parsedJson)
-    
+
     if (!parsed.success) throw new Error('Invalid question payload')
 
     const validSubskills = new Set(topic.subskills.map((s) => s.id))
     const stamp = Date.now().toString(36)
-    
+
     return parsed.data.questions
       .map((q, i) => ({
         id: `ai-${stamp}-${i}`,
@@ -176,14 +196,6 @@ export async function tutorReply(input: {
         : `The student chose ${input.options[input.chosenIndex]}, which is wrong.`
 
   try {
-    const model = getGenAI().getGenerativeModel({
-      model: TUTOR_MODEL,
-      systemInstruction: 'You are a warm, encouraging peer tutor for university Computing mathematics. You care about understanding, not just answers. Be concise (under 150 words), use short paragraphs or numbered steps, and write all maths in KaTeX-compatible LaTeX inside $...$. Never use markdown headings or tables. Bold sparingly with **text**.',
-      generationConfig: {
-        maxOutputTokens: 700,
-      },
-    })
-
     const prompt = `Question: ${input.question}
 Options: ${input.options.map((o, i) => `(${String.fromCharCode(65 + i)}) ${o}`).join('  ')}
 Correct answer: ${input.options[input.correctIndex]}
@@ -193,25 +205,18 @@ ${chosen}
 Task: ${MODE_INSTRUCTIONS[input.mode]}
 ${input.message ? `Student says: """${input.message}"""` : ''}`
 
-    const result = await model.generateContent(prompt)
-    const text = result.response.text().trim()
+    const responseText = await generateWithFallback(
+      prompt,
+      'You are a warm, encouraging peer tutor for university Computing mathematics. You care about understanding, not just answers. Be concise (under 150 words), use short paragraphs or numbered steps, and write all maths in KaTeX-compatible LaTeX inside $...$. Never use markdown headings or tables. Bold sparingly with **text**.',
+      {
+        maxOutputTokens: 700,
+      },
+    )
+
+    const text = responseText.trim()
     return text || 'I could not come up with an explanation just now — try asking in a different way.'
-  
-  } catch (error: unknown) {
-    const err = error as {
-      message?: string
-      status?: number
-      statusText?: string
-      errorDetails?: unknown
-    }
-
-    console.error('Tutor request failed', {
-      message: err.message ?? String(error),
-      status: err.status,
-      statusText: err.statusText,
-      errorDetails: err.errorDetails,
-    })
-
+  } catch (error) {
+    console.error('Tutor request failed', error)
     throw new Error('The tutor is unavailable right now. Please try again in a moment.')
   }
 }
