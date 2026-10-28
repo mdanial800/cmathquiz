@@ -14,7 +14,7 @@ function getGenAI() {
 }
 
 // Tries gemini-3.8-pro first; falls back to gemini-3.8-flash if overloaded (503) or rate-limited (429)
-const MODEL_PRIORITY = ['gemini-3.1-pro', 'gemini-3.8-flash']
+const MODEL_PRIORITY = ['gemini-3.1-pro', 'gemini-3.8-flash', 'gemini-3.5-flash-lite']
 
 async function generateWithFallback(
   prompt: string,
