@@ -8,12 +8,10 @@ import type { TutorMode } from './quiz.functions'
 
 // Initialize Gemini (It will look for GEMINI_API_KEY in the environment)
 function getGenAI() {
-  const apiKey = env.GEMINI_API_KEY
-
+  const apiKey = process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is missing')
   }
-
   return new GoogleGenerativeAI(apiKey)
 }
 
@@ -103,8 +101,7 @@ export async function generateRound(input: {
   const context = CONTEXTS[Math.floor(Math.random() * CONTEXTS.length)]
 
   try {
-    const genAI = getGenAI()
-    const model = genAI.getGenerativeModel({
+    const model = getGenAI().getGenerativeModel({
       model: QUESTION_MODEL,
       systemInstruction: 'You are an expert university Computing mathematics lecturer who writes rigorous, diagnostic multiple-choice questions. Accuracy is paramount: solve every question fully in solution_steps before writing the options, then double-check that exactly one option matches your solution. Every distractor must come from a genuine, common student misconception or slip, and its "why" must name that misconception kindly and precisely. Use KaTeX-compatible LaTeX wrapped in $...$ for all maths (use \\begin{bmatrix} for matrices). Keep numbers clean so the question can be solved by hand in under two minutes.',
       generationConfig: {
@@ -179,8 +176,7 @@ export async function tutorReply(input: {
         : `The student chose ${input.options[input.chosenIndex]}, which is wrong.`
 
   try {
-    const genAI = getGenAI()
-    const model = genAI.getGenerativeModel({
+    const model = getGenAI().getGenerativeModel({
       model: TUTOR_MODEL,
       systemInstruction: 'You are a warm, encouraging peer tutor for university Computing mathematics. You care about understanding, not just answers. Be concise (under 150 words), use short paragraphs or numbered steps, and write all maths in KaTeX-compatible LaTeX inside $...$. Never use markdown headings or tables. Bold sparingly with **text**.',
       generationConfig: {
