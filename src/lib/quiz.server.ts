@@ -5,16 +5,19 @@ import { DIFFICULTY_LEVELS, getTopic, type Difficulty, type TopicId } from './to
 import { pickBankRound, type Question } from './question-bank'
 import type { TutorMode } from './quiz.functions'
 
-function getGenAI() {
-  const apiKey = process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is missing')
+// 2. Check for Google (Gemini)
+  const geminiKey = process.env.GEMINI_API_KEY || import.meta.env.VITE_GEMINI_API_KEY
+  if (geminiKey) {
+    const google = createGoogleGenerativeAI({ apiKey: geminiKey })
+    
+    // "Smart" models: Prioritized for generating complex quiz questions
+    smartModels.push({ name: 'Gemini 4 Argon', model: google('gemini-4-argon') })
+    smartModels.push({ name: 'Gemini 3.1 Pro', model: google('gemini-3.1-pro') })
+    
+    // "Fast" models: Prioritized for the real-time AI Tutor chat
+    fastModels.push({ name: 'Gemini 3.8 Flash', model: google('gemini-3.8-flash') })
+    fastModels.push({ name: 'Gemini 3.5 Flash-Lite', model: google('gemini-3.5-flash-lite') })
   }
-  return new GoogleGenerativeAI(apiKey)
-}
-
-// Tries gemini-3.8-pro first; falls back to gemini-3.8-flash if overloaded (503) or rate-limited (429)
-const MODEL_PRIORITY = ['gemini-3.1-pro', 'gemini-3.8-flash', 'gemini-3.5-flash-lite']
 
 async function generateWithFallback(
   prompt: string,
